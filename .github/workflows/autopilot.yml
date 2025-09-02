@@ -1,0 +1,19 @@
+name: MediaTools Autopilot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # runs every 6 hours
+
+jobs:
+  run-autopilot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Run MediaTools Autopilot Notebook
+        uses: machine-learning-apps/execute-notebook@v2
+        with:
+          notebook: MediaTools_Autopilot.ipynb
+          timeout_minutes: 120
