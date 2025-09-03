@@ -11,12 +11,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
-
-      - name: Debug - List repo files
-        run: |
-          echo "📂 Listing files in repo root..."
-          ls -R .
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -28,81 +23,93 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install jupyter nbconvert ipykernel \
-                     yt-dlp ffmpeg-python openai-whisper srt pandas pyyaml \
-                     pydrive2
+          pip install jupyter nbconvert yt-dlp ffmpeg-python openai-whisper srt numpy pandas pydrive2
 
+      - name: Debug — list repo files
+        run: ls -la
+
+      # --- Convert notebook to a script with a fixed name ---
       - name: Convert notebook to script (force name)
         run: |
-          jupyter nbconvert --to script "MediaTools_Autopilot.ipynb" --output "autopilot_script"
+          jupyter nbconvert --to python "MediaTools_Autopilot.ipynb" --output "autopilot_script.py"
 
-      - name: Debug - List files after conversion
-        run: |
-          echo "📂 Listing files after nbconvert..."
-          ls -R .
+      - name: Debug — list after conversion
+        run: ls -la
 
+      # --- Patch out Colab-only bits and path assumptions ---
       - name: Patch script for GitHub runner
         run: |
           python3 - <<'PY'
-          import re, io, os
-          src = "autopilot_script.py"
-          with io.open(src, "r", encoding="utf-8") as f:
-              s = f.read()
+          import os, re
+          p = "autopilot_script.py"
+          if not os.path.exists(p):
+              raise SystemExit(f"Expected {p} not found. Present: {os.listdir('.')}")
+          s = open(p, 'r', encoding='utf-8').read()
 
-          # Remove Colab-specific lines
-          s = s.replace("from google.colab import drive", "print('Skipping Colab import')")
-          s = re.sub(r"drive\.mount\(.*\)", "print('Drive mount skipped')", s)
+          # Remove Colab-only imports/mounts
+          s = re.sub(r'from\s+google\.colab\s+import\s+drive\s*\n', '', s)
+          s = re.sub(r'drive\.mount\([^\n]*\)\s*\n', '', s)
 
-          # Rewrite paths
-          s = s.replace("/content/drive/MyDrive", "workspace")
-          s = s.replace("/content", "workspace")
+          # Normalize paths from Colab to local workspace
+          s = s.replace('/content/drive/MyDrive/', './')
+          s = s.replace('/content/', './')
 
-          with io.open(src, "w", encoding="utf-8") as f:
-              f.write(s)
+          # During testing, disable logo overlay to avoid missing asset errors
+          s = re.sub(r'^\s*USE_LOGO\s*=\s*True\s*$', 'USE_LOGO = False', s, flags=re.M)
 
-          os.makedirs("workspace", exist_ok=True)
-          os.makedirs("workspace/Autopost_Clips", exist_ok=True)
+          open(p, 'w', encoding='utf-8').write(s)
+          print("Patched", p, "OK")
           PY
 
+      # --- Run the generated script ---
       - name: Run script
-        run: |
-          python autopilot_script.py
+        run: python3 autopilot_script.py
 
+      # --- Upload all results to Google Drive folder via Service Account ---
       - name: Upload results to Google Drive
         env:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
-          FOLDER_ID:  ${{ secrets.FOLDER_ID }}
+          FOLDER_ID: ${{ secrets.FOLDER_ID }}
         run: |
-          echo "$GDRIVE_KEY" > sa.json
           python3 - <<'PY'
-          import os, glob, zipfile
+          import os, glob, json
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
+          # Write service account JSON from secret
+          with open('sa.json', 'w', encoding='utf-8') as f:
+              f.write(os.environ['GDRIVE_KEY'])
+
+          # Service account auth
           gauth = GoogleAuth()
           gauth.settings['client_config_backend'] = 'service'
-          gauth.settings['service_config'] = {'client_json_file_path': "sa.json"}
+          gauth.settings['service_config'] = {'client_json_file_path': 'sa.json'}
           gauth.ServiceAuth()
           drive = GoogleDrive(gauth)
 
-          folder_id = os.environ["FOLDER_ID"]
-          files = []
-          for pat in ["workspace/**/*.mp4", "workspace/**/*.txt", "*.ipynb"]:
-              files.extend(glob.glob(pat, recursive=True))
+          folder_id = os.environ['FOLDER_ID']
 
-          for fp in files:
-            title = os.path.basename(fp)
-            f = drive.CreateFile({"title": title, "parents": [{"id": folder_id}]})
-            f.SetContentFile(fp)
+          # Upload every file under ./Autopost_Clips
+          base = './Autopost_Clips'
+          uploaded = 0
+          for path in glob.glob(base + '/**/*', recursive=True):
+            if os.path.isdir(path): 
+              continue
+            title = os.path.basename(path)
+            f = drive.CreateFile({'title': title, 'parents': [{'id': folder_id}]})
+            f.SetContentFile(path)
             f.Upload()
-            print("✅ Uploaded:", title)
+            uploaded += 1
+            print("Uploaded:", title)
 
-          zip_name = "autopost_run.zip"
-          with zipfile.ZipFile(zip_name, "w") as z:
-            for fp in files:
-              z.write(fp)
-          fz = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
-          fz.SetContentFile(zip_name)
-          fz.Upload()
-          print("✅ Uploaded archive:", zip_name)
+          print(f"✅ Upload complete. Files uploaded: {uploaded}")
           PY
+
+      # --- Keep a local artifact as fallback ---
+      - name: Upload artifacts (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run_outputs
+          path: |
+            Autopost_Clips/**
