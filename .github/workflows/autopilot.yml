@@ -13,6 +13,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
+      - name: Debug - List repo files
+        run: |
+          echo "📂 Listing files in repo root..."
+          ls -R .
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -27,15 +32,20 @@ jobs:
                      yt-dlp ffmpeg-python openai-whisper srt pandas pyyaml \
                      pydrive2
 
-      - name: Convert notebook to script
+      - name: Convert notebook to script (force name)
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb
+          jupyter nbconvert --to script "MediaTools_Autopilot.ipynb" --output "autopilot_script"
+
+      - name: Debug - List files after conversion
+        run: |
+          echo "📂 Listing files after nbconvert..."
+          ls -R .
 
       - name: Patch script for GitHub runner
         run: |
           python3 - <<'PY'
           import re, io, os
-          src = "MediaTools_Autopilot.py"
+          src = "autopilot_script.py"
           with io.open(src, "r", encoding="utf-8") as f:
               s = f.read()
 
@@ -56,7 +66,7 @@ jobs:
 
       - name: Run script
         run: |
-          python MediaTools_Autopilot.py
+          python autopilot_script.py
 
       - name: Upload results to Google Drive
         env:
@@ -96,21 +106,3 @@ jobs:
           fz.Upload()
           print("✅ Uploaded archive:", zip_name)
           PY
-
-      - name: Upload artifacts (fallback)
-        uses: actions/upload-artifact@v4
-        with:
-          name: autopilot-output
-          path: |
-            workspace/**
-            *.ipynb
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Clean up old logs (keep last 20)
-        uses: dev-drprasad/delete-older-releases@v0.2.1
-        with:
-          keep_latest: 20
-          delete_tags: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
