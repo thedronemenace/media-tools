@@ -3,7 +3,7 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours
+    - cron: "0 */2 * * *"   # runs every 2 hours
 
 jobs:
   run-autopilot:
@@ -24,53 +24,69 @@ jobs:
 
       - name: Convert Notebook to script
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output MediaTools_Autopilot
 
       - name: Run script
-        run: |
-          python MediaTools_Autopilot.py
+        run: python MediaTools_Autopilot.py
 
       - name: Upload results to Google Drive
         env:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
           FOLDER_ID: ${{ secrets.FOLDER_ID }}
         run: |
-          echo "$GDRIVE_KEY" > key.json
-          python3 - <<EOF
-          import os, json, glob, datetime, zipfile
+          python - <<'EOF'
+          import os, glob, json, datetime, zipfile
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
           # Save service account key
+          key_data = os.getenv("GDRIVE_KEY")
           with open("sa.json", "w") as f:
-              f.write(os.getenv("GDRIVE_KEY"))
+              f.write(key_data)
 
+          # Auth
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("sa.json")
           drive = GoogleDrive(gauth)
 
           folder_id = os.getenv("FOLDER_ID")
-          ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+          timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-          files_to_upload = glob.glob("*.mp4") + glob.glob("*.txt")
+          uploads = []
 
-          # Upload each raw result
-          for file in files_to_upload:
-              new_name = f"{os.path.splitext(file)[0]}_{ts}{os.path.splitext(file)[1]}"
-              gfile = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
-              gfile.SetContentFile(file)
-              gfile.Upload()
-              print("Uploaded:", new_name)
+          # Upload executed notebook results
+          for file in glob.glob("*.ipynb"):
+              new_name = f"{os.path.splitext(file)[0]}_{timestamp}.ipynb"
+              f1 = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
+              f1.SetContentFile(file)
+              f1.Upload()
+              uploads.append(new_name)
 
-          # Create a zip of all results
-          zip_name = f"autopilot_results_{ts}.zip"
-          with zipfile.ZipFile(zip_name, "w") as zf:
-              for file in files_to_upload:
-                  zf.write(file)
+          # Upload all generated clips
+          for clip in glob.glob("*.mp4"):
+              new_name = f"{os.path.splitext(clip)[0]}_{timestamp}.mp4"
+              f2 = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
+              f2.SetContentFile(clip)
+              f2.Upload()
+              uploads.append(new_name)
 
-          gzip = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
-          gzip.SetContentFile(zip_name)
-          gzip.Upload()
-          print("Uploaded ZIP:", zip_name)
+          # Upload captions
+          for cap in glob.glob("*.txt"):
+              new_name = f"{os.path.splitext(cap)[0]}_{timestamp}.txt"
+              f3 = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
+              f3.SetContentFile(cap)
+              f3.Upload()
+              uploads.append(new_name)
 
+          # Create + upload ZIP of all results
+          zip_name = f"autopilot_results_{timestamp}.zip"
+          with zipfile.ZipFile(zip_name, "w") as zipf:
+              for file in glob.glob("*.mp4") + glob.glob("*.txt") + glob.glob("*.ipynb"):
+                  zipf.write(file)
+          f4 = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
+          f4.SetContentFile(zip_name)
+          f4.Upload()
+          uploads.append(zip_name)
+
+          print("✅ Uploaded files:", uploads)
           EOF
