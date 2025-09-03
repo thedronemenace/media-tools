@@ -3,11 +3,12 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # runs every 2 hours
+    - cron: "0 */2 * * *"   # every 2 hours
 
 jobs:
   run-autopilot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -17,68 +18,99 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install dependencies
+      - name: Install system + Python deps
         run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install jupyter papermill ipykernel pyyaml pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
-          python -m ipykernel install --user --name=python3
+          pip install jupyter nbconvert ipykernel \
+                     yt-dlp ffmpeg-python openai-whisper srt pandas pyyaml \
+                     pydrive2
 
-      - name: Run Notebook with Papermill
+      - name: Convert notebook to script
         run: |
-          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
-          papermill MediaTools_Autopilot.ipynb executed_${TIMESTAMP}.ipynb -k python3
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb
+
+      - name: Patch script for GitHub runner
+        run: |
+          python3 - <<'PY'
+          import re, io, os
+          src = "MediaTools_Autopilot.py"
+          with io.open(src, "r", encoding="utf-8") as f:
+              s = f.read()
+
+          # Remove Colab-specific lines
+          s = s.replace("from google.colab import drive", "print('Skipping Colab import')")
+          s = re.sub(r"drive\.mount\(.*\)", "print('Drive mount skipped')", s)
+
+          # Rewrite paths
+          s = s.replace("/content/drive/MyDrive", "workspace")
+          s = s.replace("/content", "workspace")
+
+          with io.open(src, "w", encoding="utf-8") as f:
+              f.write(s)
+
+          os.makedirs("workspace", exist_ok=True)
+          os.makedirs("workspace/Autopost_Clips", exist_ok=True)
+          PY
+
+      - name: Run script
+        run: |
+          python MediaTools_Autopilot.py
 
       - name: Upload results to Google Drive
         env:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
-          FOLDER_ID: ${{ secrets.FOLDER_ID }}
+          FOLDER_ID:  ${{ secrets.FOLDER_ID }}
         run: |
-          echo "$GDRIVE_KEY" > key.json
-          python3 - <<EOF
-          import os, json, glob, zipfile
+          echo "$GDRIVE_KEY" > sa.json
+          python3 - <<'PY'
+          import os, glob, zipfile
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Save service account key
-          with open("sa.json", "w") as f:
-              f.write(open("key.json").read())
-
           gauth = GoogleAuth()
-          gauth.LoadCredentialsFile("sa.json")
+          gauth.settings['client_config_backend'] = 'service'
+          gauth.settings['service_config'] = {'client_json_file_path': "sa.json"}
+          gauth.ServiceAuth()
           drive = GoogleDrive(gauth)
 
-          folder_id = os.getenv("FOLDER_ID")
+          folder_id = os.environ["FOLDER_ID"]
+          files = []
+          for pat in ["workspace/**/*.mp4", "workspace/**/*.txt", "*.ipynb"]:
+              files.extend(glob.glob(pat, recursive=True))
 
-          # Upload executed notebooks
-          for nb in glob.glob("executed_*.ipynb"):
-              f = drive.CreateFile({"title": os.path.basename(nb), "parents": [{"id": folder_id}]})
-              f.SetContentFile(nb)
-              f.Upload()
-              print(f"✅ Uploaded notebook {nb}")
+          for fp in files:
+            title = os.path.basename(fp)
+            f = drive.CreateFile({"title": title, "parents": [{"id": folder_id}]})
+            f.SetContentFile(fp)
+            f.Upload()
+            print("✅ Uploaded:", title)
 
-          # Upload generated clips
-          clips = glob.glob("*.mp4")
-          for clip in clips:
-              f = drive.CreateFile({"title": os.path.basename(clip), "parents": [{"id": folder_id}]})
-              f.SetContentFile(clip)
-              f.Upload()
-              print(f"✅ Uploaded clip {clip}")
-
-          # Upload generated captions
-          captions = glob.glob("*.txt")
-          for cap in captions:
-              f = drive.CreateFile({"title": os.path.basename(cap), "parents": [{"id": folder_id}]})
-              f.SetContentFile(cap)
-              f.Upload()
-              print(f"✅ Uploaded caption {cap}")
-
-          # Create & upload ZIP of everything
           zip_name = "autopost_run.zip"
-          with zipfile.ZipFile(zip_name, "w") as zipf:
-              for file in clips + captions:
-                  zipf.write(file)
-          f = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
-          f.SetContentFile(zip_name)
-          f.Upload()
-          print(f"✅ Uploaded archive {zip_name}")
-          EOF
+          with zipfile.ZipFile(zip_name, "w") as z:
+            for fp in files:
+              z.write(fp)
+          fz = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
+          fz.SetContentFile(zip_name)
+          fz.Upload()
+          print("✅ Uploaded archive:", zip_name)
+          PY
+
+      - name: Upload artifacts (fallback)
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopilot-output
+          path: |
+            workspace/**
+            *.ipynb
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Clean up old logs (keep last 20)
+        uses: dev-drprasad/delete-older-releases@v0.2.1
+        with:
+          keep_latest: 20
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
