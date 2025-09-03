@@ -3,11 +3,12 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # runs every 2 hours
+    - cron: "0 */2 * * *"   # every 2 hours
 
 jobs:
   run-autopilot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -20,75 +21,40 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nbconvert pydrive2
+          pip install papermill pyyaml pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
 
-      - name: Upload results + clips + captions + zip to Drive
+      - name: Run Notebook with Papermill
+        run: |
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
+          papermill MediaTools_Autopilot.ipynb executed_${TIMESTAMP}.ipynb
+
+      - name: Upload results to Google Drive
         env:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
           FOLDER_ID: ${{ secrets.FOLDER_ID }}
         run: |
-          echo "$GDRIVE_KEY" > key.json
+          echo "$GDRIVE_KEY" > sa.json
 
-          # Run notebook + capture logs
-          jupyter nbconvert --to notebook --execute MediaTools_Autopilot.ipynb \
-            --output result.ipynb --ExecutePreprocessor.timeout=3600 2>&1 | tee run.log
-
-          python3 - <<'EOF'
-          import os, datetime, glob, zipfile
+          python - <<'EOF'
+          import os, glob, json, datetime
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Save service account key
-          with open("sa.json", "w") as f:
-              f.write(os.getenv("GDRIVE_KEY"))
-
+          # Authenticate
+          with open("sa.json","w") as f: f.write(os.getenv("GDRIVE_KEY"))
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("sa.json")
           drive = GoogleDrive(gauth)
 
           folder_id = os.getenv("FOLDER_ID")
-          ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+          ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-          # Upload executed notebook
-          f1 = drive.CreateFile({"title": f"result_{ts}.ipynb", "parents": [{"id": folder_id}]})
-          f1.SetContentFile("result.ipynb")
-          f1.Upload()
-          print("✔ Uploaded result notebook")
-
-          # Upload log file
-          f2 = drive.CreateFile({"title": f"run_{ts}.log", "parents": [{"id": folder_id}]})
-          f2.SetContentFile("run.log")
-          f2.Upload()
-          print("✔ Uploaded run.log")
-
-          # Upload all generated MP4 clips
-          clips = glob.glob("/content/drive/MyDrive/Autopost_Clips/*.mp4")
-          for clip in clips:
-              base = os.path.basename(clip)
-              new_name = f"{os.path.splitext(base)[0]}_{ts}.mp4"
-              f3 = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
-              f3.SetContentFile(clip)
-              f3.Upload()
-              print(f"✔ Uploaded clip {new_name}")
-
-          # Upload all generated captions (.txt files)
-          captions = glob.glob("/content/drive/MyDrive/Autopost_Clips/*.txt")
-          for cap in captions:
-              base = os.path.basename(cap)
-              new_name = f"{os.path.splitext(base)[0]}_{ts}.txt"
-              f4 = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
-              f4.SetContentFile(cap)
-              f4.Upload()
-              print(f"✔ Uploaded caption {new_name}")
-
-          # Create and upload a ZIP with all clips + captions
-          zip_name = f"autopost_run_{ts}.zip"
-          with zipfile.ZipFile(zip_name, "w") as zipf:
-              for file in clips + captions:
-                  zipf.write(file, os.path.basename(file))
-          f5 = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
-          f5.SetContentFile(zip_name)
-          f5.Upload()
-          print(f"✔ Uploaded package {zip_name}")
-
+          # Upload all generated files (mp4 + txt)
+          for file in glob.glob("**/*", recursive=True):
+              if file.endswith((".mp4",".txt",".ipynb")):
+                  new_name = f"{os.path.basename(file).split('.')[0]}_{ts}{os.path.splitext(file)[1]}"
+                  gfile = drive.CreateFile({"title": new_name, "parents": [{"id": folder_id}]})
+                  gfile.SetContentFile(file)
+                  gfile.Upload()
+                  print("✔ Uploaded:", new_name)
           EOF
