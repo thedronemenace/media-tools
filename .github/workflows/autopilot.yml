@@ -23,40 +23,54 @@ jobs:
           python -m pip install --upgrade pip
           pip install papermill nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
 
-      - name: Debug — list repo files
-        run: ls -lh
-
       - name: Convert Notebook to Python
         run: |
           jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
 
-      - name: Normalize script filename (fallback if .txt)
+      - name: Normalize script filename
         run: |
           if [ -f "autopilot_script.txt" ]; then
             mv autopilot_script.txt autopilot_script.py
           fi
-          if [ ! -f "autopilot_script.py" ]; then
+          if [ -f "autopilot_script.py" ]; then
+            echo "✅ autopilot_script.py ready"
+          else
             echo "❌ autopilot_script.py missing!"
             exit 1
           fi
-          ls -lh autopilot_script.py
 
-      - name: Patch autopilot script for GitHub runner
+      - name: Patch script with Python (remove Colab-only code)
         run: |
-          # Replace Colab get_ipython calls
-          sed -i 's/get_ipython().system/os.system/g' autopilot_script.py
-          # Replace raw shell calls like "!apt-get ..." or "apt-get ..." with os.system("...")
-          sed -i 's/^!\\(.*\\)$/os.system("\\1")/g' autopilot_script.py
-          sed -i 's/^\\s*apt-get/os.system("apt-get/g' autopilot_script.py
-          sed -i 's/>\\/dev\\/null")/>\\/dev\\/null")/g' autopilot_script.py
-          # Ensure os is imported
-          grep -qxF 'import os' autopilot_script.py || sed -i '1i import os' autopilot_script.py
-          echo "✅ Patched autopilot_script.py (first 20 lines):"
-          head -n 20 autopilot_script.py
+          python3 - <<'PY'
+          import re
+          lines = []
+          with open("autopilot_script.py", "r") as f:
+              for line in f:
+                  # Drop Colab-specific lines
+                  if "google.colab" in line or "drive.mount" in line:
+                      continue
+                  # Replace get_ipython().system("...") with os.system("...")
+                  if "get_ipython()" in line:
+                      line = re.sub(r'get_ipython\(\)\.system\((.*)\)', r'os.system(\1)', line)
+                  # Replace shell starts with os.system("...")
+                  if line.strip().startswith("!"):
+                      cmd = line.strip()[1:]
+                      line = f'os.system("{cmd}")\n'
+                  lines.append(line)
+
+          # Ensure import os
+          if not any("import os" in l for l in lines):
+              lines.insert(0, "import os\n")
+
+          with open("autopilot_script.py", "w") as f:
+              f.writelines(lines)
+
+          print("✅ autopilot_script.py patched successfully")
+          PY
 
       - name: Run autopilot script
         run: |
-          echo "Running script..."
+          echo "Running autopilot_script.py..."
           python3 autopilot_script.py
 
       - name: Upload results to Google Drive
