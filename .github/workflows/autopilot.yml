@@ -2,67 +2,62 @@ name: MediaTools Autopilot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */2 * * *"  # every 2 hours
 
 jobs:
   run-autopilot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install nbconvert nbformat pandas numpy openai-whisper yt-dlp ffmpeg-python pydrive2
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yt-dlp ffmpeg-python openai-whisper srt numpy pandas pydrive2 nbconvert
 
-      - name: Convert Notebook to Python
-        run: |
-          jupyter nbconvert --to python MediaTools_Autopilot.ipynb --output autopilot_script.py
+    - name: Convert Notebook to Python
+      run: |
+        jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
 
-      - name: Run autopilot script
-        run: |
-          echo "Running autopilot_script.py..."
-          python3 autopilot_script.py
+    - name: Run autopilot script
+      run: |
+        echo "Running autopilot_script.py..."
+        python3 autopilot_script.py
 
-      - name: Upload results to Google Drive
-        env:
-          GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
-        run: |
-          python3 - <<'PY'
-          import os
-          from pydrive2.auth import GoogleAuth
-          from pydrive2.drive import GoogleDrive
+    - name: Upload results to Google Drive
+      env:
+        GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
+        GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GDRIVE_SERVICE_KEY }}
+      run: |
+        python3 <<'PY'
+        from pydrive2.auth import GoogleAuth
+        from pydrive2.drive import GoogleDrive
+        import os, json
 
-          gauth = GoogleAuth()
-          gauth.LoadCredentialsFile("client_secrets.json")
-          if not gauth.credentials:
-              gauth.LocalWebserverAuth()
-          elif gauth.access_token_expired:
-              gauth.Refresh()
-          else:
-              gauth.Authorize()
-          drive = GoogleDrive(gauth)
+        creds_path = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+        with open(creds_path, 'w') as f:
+            f.write(os.environ['GDRIVE_SERVICE_KEY'])
 
-          folder_id = os.getenv("GDRIVE_FOLDER_ID")
-          for root, _, files in os.walk("Autopost_Clips"):
-              for file in files:
-                  f = drive.CreateFile({"title": file, "parents": [{"id": folder_id}]})
-                  f.SetContentFile(os.path.join(root, file))
-                  f.Upload()
-                  print(f"✅ Uploaded {file}")
-          PY
+        gauth = GoogleAuth()
+        gauth.LoadCredentialsFile(creds_path)
+        if gauth.credentials is None:
+            gauth.LocalWebserverAuth()
+        else:
+            gauth.Authorize()
+        drive = GoogleDrive(gauth)
 
-      - name: Upload artifacts (fallback)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: autopilot-results
-          path: ./Autopost_Clips/**
+        folder_id = os.environ['GDRIVE_FOLDER_ID']
+        for root, _, files in os.walk("Autopost_Clips"):
+            for file_name in files:
+                file_path = os.path.join(root, file_name)
+                f = drive.CreateFile({"title": file_name, "parents": [{"id": folder_id}]})
+                f.SetContentFile(file_path)
+                f.Upload()
+                print("✅ Uploaded:", file_name)
+        PY
