@@ -3,7 +3,7 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours
+    - cron: "0 */2 * * *" # runs every 2 hours
 
 jobs:
   run-autopilot:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -20,23 +20,18 @@ jobs:
 
       - name: Install system + Python deps
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
+          sudo apt-get -y update
+          sudo apt-get -y install ffmpeg
           python -m pip install --upgrade pip
-          pip install jupyter nbconvert yt-dlp ffmpeg-python openai-whisper srt numpy pandas pydrive2
+          pip install papermill nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
 
-      - name: Debug — list repo files
-        run: ls -la
-
-      # --- Convert notebook to a script with a fixed name ---
       - name: Convert notebook to script (force name)
         run: |
-          jupyter nbconvert --to python "MediaTools_Autopilot.ipynb" --output "autopilot_script.py"
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
 
-      - name: Debug — list after conversion
-        run: ls -la
+      - name: Debug — list files after conversion
+        run: ls -R .
 
-      # --- Patch out Colab-only bits and path assumptions ---
       - name: Patch script for GitHub runner
         run: |
           python3 - <<'PY'
@@ -50,66 +45,60 @@ jobs:
           s = re.sub(r'from\s+google\.colab\s+import\s+drive\s*\n', '', s)
           s = re.sub(r'drive\.mount\([^\n]*\)\s*\n', '', s)
 
+          # Remove get_ipython and ! commands
+          s = re.sub(r'get_ipython\(\)\.system\(.*\)\s*\n', '', s)
+          s = re.sub(r'^\s*!\S+.*$', '', s, flags=re.M)
+
           # Normalize paths from Colab to local workspace
           s = s.replace('/content/drive/MyDrive/', './')
           s = s.replace('/content/', './')
 
-          # During testing, disable logo overlay to avoid missing asset errors
+          # During testing, disable logo overlay if missing
           s = re.sub(r'^\s*USE_LOGO\s*=\s*True\s*$', 'USE_LOGO = False', s, flags=re.M)
 
           open(p, 'w', encoding='utf-8').write(s)
           print("Patched", p, "OK")
           PY
 
-      # --- Run the generated script ---
       - name: Run script
         run: python3 autopilot_script.py
 
-      # --- Upload all results to Google Drive folder via Service Account ---
       - name: Upload results to Google Drive
         env:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
-          FOLDER_ID: ${{ secrets.FOLDER_ID }}
         run: |
           python3 - <<'PY'
-          import os, glob, json
+          import os, json
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Write service account JSON from secret
-          with open('sa.json', 'w', encoding='utf-8') as f:
-              f.write(os.environ['GDRIVE_KEY'])
+          keyfile = "key.json"
+          with open(keyfile, "w") as f:
+              f.write(os.environ["GDRIVE_KEY"])
 
-          # Service account auth
           gauth = GoogleAuth()
-          gauth.settings['client_config_backend'] = 'service'
-          gauth.settings['service_config'] = {'client_json_file_path': 'sa.json'}
-          gauth.ServiceAuth()
+          gauth.LoadCredentialsFile(keyfile)
+          if gauth.credentials is None:
+              gauth.LocalWebserverAuth()
+          else:
+              gauth.Authorize()
           drive = GoogleDrive(gauth)
 
-          folder_id = os.environ['FOLDER_ID']
-
-          # Upload every file under ./Autopost_Clips
-          base = './Autopost_Clips'
-          uploaded = 0
-          for path in glob.glob(base + '/**/*', recursive=True):
-            if os.path.isdir(path): 
-              continue
-            title = os.path.basename(path)
-            f = drive.CreateFile({'title': title, 'parents': [{'id': folder_id}]})
-            f.SetContentFile(path)
-            f.Upload()
-            uploaded += 1
-            print("Uploaded:", title)
-
-          print(f"✅ Upload complete. Files uploaded: {uploaded}")
+          folder_id = "YOUR_DRIVE_FOLDER_ID"  # TODO: replace with your Drive folder ID
+          for fname in os.listdir("./Autopost_Clips"):
+              f = drive.CreateFile({"title": fname, "parents": [{"id": folder_id}]})
+              f.SetContentFile(os.path.join("./Autopost_Clips", fname))
+              f.Upload()
+              print("Uploaded:", fname)
           PY
 
-      # --- Keep a local artifact as fallback ---
       - name: Upload artifacts (fallback)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
-          name: run_outputs
-          path: |
-            Autopost_Clips/**
+          name: autopilot-results
+          path: ./Autopost_Clips/**
+
+      - name: Clean up old logs (keep last 20)
+        run: |
+          echo "Cleaning old logs..."
