@@ -22,45 +22,51 @@ jobs:
           pip install nbconvert nbformat papermill pydrive2 gdown yt-dlp ffmpeg-python openai-whisper srt numpy pandas
 
       - name: Convert Notebook to Python
-        continue-on-error: true
         run: |
-          echo "Attempting to convert notebook to script..."
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py || true
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
 
-      - name: Debug — list repo files
-        run: ls -lh
-
-      - name: Run autopilot script (with fallback)
+      - name: Normalize script filename
         run: |
-          echo "Running autopilot..."
-          if [ -f "autopilot_script.py" ]; then
-            echo "✅ Found autopilot_script.py, running it..."
-            python3 autopilot_script.py
-          else
-            echo "⚠️ No autopilot_script.py found, running notebook with papermill..."
-            papermill MediaTools_Autopilot.ipynb MediaTools_Autopilot_output.ipynb
-          fi
+          if [ -f autopilot_script.txt ]; then mv autopilot_script.txt autopilot_script.py; fi
+
+      - name: Patch script (remove Colab-only code + add imports)
+        run: |
+          sed -i '/get_ipython/d' autopilot_script.py
+          sed -i '/^!/d' autopilot_script.py
+          sed -i '/^%/d' autopilot_script.py
+          grep -qxF "import os" autopilot_script.py || sed -i '1i import os' autopilot_script.py
+          grep -qxF "import sys" autopilot_script.py || sed -i '2i import sys' autopilot_script.py
+
+      - name: Run autopilot script
+        run: |
+          echo "Running autopilot_script.py..."
+          python3 autopilot_script.py
 
       - name: Upload results to Google Drive
-        if: always()
         run: |
-          echo "Uploading results to Google Drive..."
-          python3 <<PY
-import os, glob
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+          python3 - <<'PY'
+          import os
+          from pydrive2.auth import GoogleAuth
+          from pydrive2.drive import GoogleDrive
 
-gauth = GoogleAuth()
-gauth.LoadCredentialsFile("credentials.json")
-if not gauth.credentials:
-    gauth.LocalWebserverAuth()
-drive = GoogleDrive(gauth)
+          gauth = GoogleAuth()
+          gauth.LoadCredentialsFile("credentials.json")
+          if gauth.credentials is None:
+              gauth.LocalWebserverAuth()
+          elif gauth.access_token_expired:
+              gauth.Refresh()
+          else:
+              gauth.Authorize()
+          gauth.SaveCredentialsFile("credentials.json")
 
-folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"
+          drive = GoogleDrive(gauth)
+          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"
 
-for file_path in glob.glob("Autopost_Clips/*"):
-    f = drive.CreateFile({"title": os.path.basename(file_path), "parents": [{"id": folder_id}]})
-    f.SetContentFile(file_path)
-    f.Upload()
-    print("✅ Uploaded:", file_path)
-PY
+          for root, _, files in os.walk("Autopost_Clips"):
+              for file in files:
+                  fpath = os.path.join(root, file)
+                  gfile = drive.CreateFile({"title": file, "parents": [{"id": folder_id}]})
+                  gfile.SetContentFile(fpath)
+                  gfile.Upload()
+                  print(f"✅ Uploaded {file} to Google Drive")
+          PY
