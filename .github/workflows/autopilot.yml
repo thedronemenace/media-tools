@@ -23,7 +23,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install papermill nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
 
-      # Debug: list files
       - name: Debug — list repo files
         run: ls -lh
 
@@ -31,7 +30,6 @@ jobs:
         run: |
           jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
 
-      # Ensure file name is correct (.py not .txt)
       - name: Normalize script filename (fallback if .txt)
         run: |
           if [ -f "autopilot_script.txt" ]; then
@@ -43,10 +41,15 @@ jobs:
           fi
           ls -lh autopilot_script.py
 
-      # Patch out Colab-only commands
       - name: Patch autopilot script for GitHub runner
         run: |
+          # Replace Colab get_ipython calls
           sed -i 's/get_ipython().system/os.system/g' autopilot_script.py
+          # Replace raw shell calls like "!apt-get ..." or "apt-get ..." with os.system("...")
+          sed -i 's/^!\\(.*\\)$/os.system("\\1")/g' autopilot_script.py
+          sed -i 's/^\\s*apt-get/os.system("apt-get/g' autopilot_script.py
+          sed -i 's/>\\/dev\\/null")/>\\/dev\\/null")/g' autopilot_script.py
+          # Ensure os is imported
           grep -qxF 'import os' autopilot_script.py || sed -i '1i import os' autopilot_script.py
           echo "✅ Patched autopilot_script.py (first 20 lines):"
           head -n 20 autopilot_script.py
@@ -67,11 +70,11 @@ jobs:
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Authenticate
           with open("creds.json","r") as f:
               data = json.load(f)
           with open("creds.json","w") as f:
               json.dump(data, f)
+
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("creds.json")
           if gauth.credentials is None:
