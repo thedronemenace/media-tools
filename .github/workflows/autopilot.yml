@@ -3,120 +3,97 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"  # every 2 hours
+    - cron: "0 */2 * * *"   # every 2 hours
 
 jobs:
   run-autopilot:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Grab the repo
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2) Quick visibility into what files are actually in the repo
-      - name: Debug — list repo files
-        run: |
-          pwd
-          ls -la
-
-      # 3) Python toolchain
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # 4) System + Python deps (nbconvert + typical libs your notebook may use)
       - name: Install dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install jupyter nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
+          pip install papermill nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
 
-      # 5) Force notebook -> python (.py), show what got produced
+      # Debug: list files
+      - name: Debug — list repo files
+        run: ls -lh
+
       - name: Convert Notebook to Python
         run: |
-          set -e
-          echo "Converting MediaTools_Autopilot.ipynb to autopilot_script.py"
-          jupyter nbconvert --to python MediaTools_Autopilot.ipynb --output=autopilot_script
-          echo "After conversion:"
-          ls -la
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
 
-      # 6) Bulletproof fallback: if nbconvert gave .txt for any reason, run that as .py
+      # Ensure file name is correct (.py not .txt)
       - name: Normalize script filename (fallback if .txt)
         run: |
-          if [ -f autopilot_script.py ]; then
-            echo "✅ Found autopilot_script.py"
-          elif [ -f autopilot_script.txt ]; then
-            echo "⚠️  nbconvert emitted .txt; renaming to .py"
-            cp autopilot_script.txt autopilot_script.py
-          else
-            echo "❌ No autopilot_script.(py|txt) found after conversion."
-            ls -la
+          if [ -f "autopilot_script.txt" ]; then
+            mv autopilot_script.txt autopilot_script.py
+          fi
+          if [ ! -f "autopilot_script.py" ]; then
+            echo "❌ autopilot_script.py missing!"
             exit 1
           fi
+          ls -lh autopilot_script.py
 
-      # 7) Run the converted script
+      # Patch out Colab-only commands
+      - name: Patch autopilot script for GitHub runner
+        run: |
+          sed -i 's/get_ipython().system/os.system/g' autopilot_script.py
+          grep -qxF 'import os' autopilot_script.py || sed -i '1i import os' autopilot_script.py
+          echo "✅ Patched autopilot_script.py (first 20 lines):"
+          head -n 20 autopilot_script.py
+
       - name: Run autopilot script
         run: |
           echo "Running script..."
           python3 autopilot_script.py
 
-      # 8) Upload results directory to Google Drive (zip first to reduce API calls)
       - name: Upload results to Google Drive
         env:
-          GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}           # your service account JSON (already created)
-          FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z   # your shared folder ID
+          GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
+          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
         run: |
-          set -e
-          echo "$GDRIVE_KEY" > sa.json
-
+          echo "$GDRIVE_CREDENTIALS_DATA" > creds.json
           python3 - <<'PY'
-          import os, zipfile, glob
+          import os, glob, json
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          RESULTS_DIR = "Autopost_Clips"
-          ZIP_NAME = "autopilot_results.zip"
-          FOLDER_ID = os.getenv("FOLDER_ID")
-
-          # Zip results if the folder exists; otherwise create an empty zip so step stays consistent
-          if os.path.isdir(RESULTS_DIR):
-              with zipfile.ZipFile(ZIP_NAME, "w", zipfile.ZIP_DEFLATED) as z:
-                  for root, _, files in os.walk(RESULTS_DIR):
-                      for f in files:
-                          full = os.path.join(root, f)
-                          rel = os.path.relpath(full, RESULTS_DIR)
-                          z.write(full, arcname=os.path.join(RESULTS_DIR, rel))
-          else:
-              with zipfile.ZipFile(ZIP_NAME, "w") as z:
-                  pass
-
-          # Service account auth for PyDrive2
-          gauth = GoogleAuth(settings={
-              "client_config_backend": "service",
-              "service_config": {
-                  "client_json_file_path": "sa.json"
-              }
-          })
-          gauth.ServiceAuth()
+          # Authenticate
+          with open("creds.json","r") as f:
+              data = json.load(f)
+          with open("creds.json","w") as f:
+              json.dump(data, f)
+          gauth = GoogleAuth()
+          gauth.LoadCredentialsFile("creds.json")
+          if gauth.credentials is None:
+              raise RuntimeError("No credentials loaded")
           drive = GoogleDrive(gauth)
 
-          f = drive.CreateFile({"title": ZIP_NAME, "parents": [{"id": FOLDER_ID}]})
-          f.SetContentFile(ZIP_NAME)
-          f.Upload()
-          print("✅ Uploaded to Google Drive:", f.get("alternateLink", "(no link)"))
+          folder_id = os.getenv("GDRIVE_FOLDER_ID")
+          files = glob.glob("Autopost_Clips/*")
+
+          if not files:
+              print("⚠️ No clips to upload")
+          for fp in files:
+              fname = os.path.basename(fp)
+              f = drive.CreateFile({"title": fname, "parents": [{"id": folder_id}]})
+              f.SetContentFile(fp)
+              f.Upload()
+              print(f"✅ Uploaded {fname} to Google Drive")
           PY
 
-      # 9) Also keep a copy of outputs as a GitHub artifact (non-deprecated v4)
       - name: Upload artifacts (fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: autopilot-results
-          path: |
-            Autopost_Clips/**
-            autopilot_script.py
-            autopilot_script.txt
-          retention-days: 7
+          path: ./Autopost_Clips/**
