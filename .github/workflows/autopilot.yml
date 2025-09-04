@@ -3,7 +3,7 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours
+    - cron: "0 */2 * * *"  # every 2 hours
 
 jobs:
   run-autopilot:
@@ -21,52 +21,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install papermill nbconvert pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2
+          pip install pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2 nbconvert
 
       - name: Convert Notebook to Python
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
 
-      - name: Normalize script filename
+      - name: Patch autopilot script (remove Colab-only + import os)
         run: |
-          if [ -f "autopilot_script.txt" ]; then
-            mv autopilot_script.txt autopilot_script.py
-          fi
-          if [ -f "autopilot_script.py" ]; then
-            echo "✅ autopilot_script.py ready"
-          else
-            echo "❌ autopilot_script.py missing!"
-            exit 1
-          fi
-
-      - name: Patch script with Python (remove Colab-only code)
-        run: |
-          python3 - <<'PY'
-          import re
-          lines = []
-          with open("autopilot_script.py", "r") as f:
-              for line in f:
-                  # Drop Colab-specific lines
-                  if "google.colab" in line or "drive.mount" in line:
-                      continue
-                  # Replace get_ipython().system("...") with os.system("...")
-                  if "get_ipython()" in line:
-                      line = re.sub(r'get_ipython\(\)\.system\((.*)\)', r'os.system(\1)', line)
-                  # Replace shell starts with os.system("...")
-                  if line.strip().startswith("!"):
-                      cmd = line.strip()[1:]
-                      line = f'os.system("{cmd}")\n'
-                  lines.append(line)
-
-          # Ensure import os
-          if not any("import os" in l for l in lines):
-              lines.insert(0, "import os\n")
-
-          with open("autopilot_script.py", "w") as f:
-              f.writelines(lines)
-
-          print("✅ autopilot_script.py patched successfully")
-          PY
+          sed -i '/google.colab/d' autopilot_script.py
+          sed -i '1i import os' autopilot_script.py
 
       - name: Run autopilot script
         run: |
@@ -76,36 +40,28 @@ jobs:
       - name: Upload results to Google Drive
         env:
           GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
-          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
         run: |
-          echo "$GDRIVE_CREDENTIALS_DATA" > creds.json
-          python3 - <<'PY'
-          import os, glob, json
+          python3 <<'PY'
+          import os
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          with open("creds.json","r") as f:
-              data = json.load(f)
-          with open("creds.json","w") as f:
-              json.dump(data, f)
-
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("creds.json")
-          if gauth.credentials is None:
-              raise RuntimeError("No credentials loaded")
+          if not gauth.credentials:
+              gauth.LocalWebserverAuth()
           drive = GoogleDrive(gauth)
 
-          folder_id = os.getenv("GDRIVE_FOLDER_ID")
-          files = glob.glob("Autopost_Clips/*")
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+          out_dir = "Autopost_Clips"
 
-          if not files:
-              print("⚠️ No clips to upload")
-          for fp in files:
-              fname = os.path.basename(fp)
-              f = drive.CreateFile({"title": fname, "parents": [{"id": folder_id}]})
-              f.SetContentFile(fp)
-              f.Upload()
-              print(f"✅ Uploaded {fname} to Google Drive")
+          for root, _, files in os.walk(out_dir):
+              for file in files:
+                  path = os.path.join(root, file)
+                  f = drive.CreateFile({"title": file, "parents": [{"id": folder_id}]})
+                  f.SetContentFile(path)
+                  f.Upload()
+                  print("✅ Uploaded", file)
           PY
 
       - name: Upload artifacts (fallback)
