@@ -23,19 +23,19 @@ jobs:
 
       - name: Convert Notebook to Python
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
-
-      - name: Normalize script filename
-        run: |
-          if [ -f autopilot_script.txt ]; then mv autopilot_script.txt autopilot_script.py; fi
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb
+          mv MediaTools_Autopilot.txt autopilot_script.py || mv MediaTools_Autopilot.py autopilot_script.py
 
       - name: Patch script (remove Colab-only code + add imports)
         run: |
-          sed -i '/get_ipython/d' autopilot_script.py
-          sed -i '/^!/d' autopilot_script.py
-          sed -i '/^%/d' autopilot_script.py
-          grep -qxF "import os" autopilot_script.py || sed -i '1i import os' autopilot_script.py
-          grep -qxF "import sys" autopilot_script.py || sed -i '2i import sys' autopilot_script.py
+          # Remove google.colab imports and drive.mount lines
+          sed -i '/google.colab/d' autopilot_script.py
+          sed -i '/drive.mount/d' autopilot_script.py
+          
+          # Ensure "os" and "pydrive2" imports exist
+          grep -q '^import os' autopilot_script.py || echo 'import os' >> autopilot_script.py
+          grep -q '^from pydrive2.auth import GoogleAuth' autopilot_script.py || echo 'from pydrive2.auth import GoogleAuth' >> autopilot_script.py
+          grep -q '^from pydrive2.drive import GoogleDrive' autopilot_script.py || echo 'from pydrive2.drive import GoogleDrive' >> autopilot_script.py
 
       - name: Run autopilot script
         run: |
@@ -43,12 +43,14 @@ jobs:
           python3 autopilot_script.py
 
       - name: Upload results to Google Drive
+        if: always()
         run: |
-          python3 - <<'PY'
-          import os
+          python - <<'PY'
+          import os, glob, json
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
+          # Auth
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("credentials.json")
           if gauth.credentials is None:
@@ -60,13 +62,11 @@ jobs:
           gauth.SaveCredentialsFile("credentials.json")
 
           drive = GoogleDrive(gauth)
-          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"
 
-          for root, _, files in os.walk("Autopost_Clips"):
-              for file in files:
-                  fpath = os.path.join(root, file)
-                  gfile = drive.CreateFile({"title": file, "parents": [{"id": folder_id}]})
-                  gfile.SetContentFile(fpath)
-                  gfile.Upload()
-                  print(f"✅ Uploaded {file} to Google Drive")
+          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"  # your Drive folder ID
+          for file in glob.glob("Autopost_Clips/*"):
+              f = drive.CreateFile({"parents": [{"id": folder_id}]})
+              f.SetContentFile(file)
+              f.Upload()
+              print("✅ Uploaded:", file)
           PY
