@@ -14,23 +14,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas ffmpeg-python yt-dlp openai-whisper srt pydrive2 nbconvert
+          pip install nbconvert nbformat pandas numpy openai-whisper yt-dlp ffmpeg-python pydrive2
 
       - name: Convert Notebook to Python
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
-
-      - name: Patch autopilot script (remove Colab-only + import os)
-        run: |
-          sed -i '/google.colab/d' autopilot_script.py
-          sed -i '1i import os' autopilot_script.py
+          jupyter nbconvert --to python MediaTools_Autopilot.ipynb --output autopilot_script.py
 
       - name: Run autopilot script
         run: |
@@ -41,27 +36,28 @@ jobs:
         env:
           GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
         run: |
-          python3 <<'PY'
+          python3 - <<'PY'
           import os
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
           gauth = GoogleAuth()
-          gauth.LoadCredentialsFile("creds.json")
+          gauth.LoadCredentialsFile("client_secrets.json")
           if not gauth.credentials:
               gauth.LocalWebserverAuth()
+          elif gauth.access_token_expired:
+              gauth.Refresh()
+          else:
+              gauth.Authorize()
           drive = GoogleDrive(gauth)
 
-          folder_id = os.environ["GDRIVE_FOLDER_ID"]
-          out_dir = "Autopost_Clips"
-
-          for root, _, files in os.walk(out_dir):
+          folder_id = os.getenv("GDRIVE_FOLDER_ID")
+          for root, _, files in os.walk("Autopost_Clips"):
               for file in files:
-                  path = os.path.join(root, file)
                   f = drive.CreateFile({"title": file, "parents": [{"id": folder_id}]})
-                  f.SetContentFile(path)
+                  f.SetContentFile(os.path.join(root, file))
                   f.Upload()
-                  print("✅ Uploaded", file)
+                  print(f"✅ Uploaded {file}")
           PY
 
       - name: Upload artifacts (fallback)
