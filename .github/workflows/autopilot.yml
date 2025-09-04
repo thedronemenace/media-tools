@@ -19,30 +19,21 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nbconvert
-          pip install papermill
-          pip install pydrive2
-          pip install gdown
-          pip install yt-dlp
-          pip install ffmpeg-python
-          pip install openai-whisper
-          pip install srt
-          pip install numpy
-          pip install pandas
+          pip install nbconvert nbfmt papermill pydrive2 gdown yt-dlp ffmpeg-python openai-whisper srt numpy pandas
 
       - name: Convert Notebook to Python
         run: |
-          jupyter nbconvert --to python MediaTools_Autopilot.ipynb --output autopilot_script.py || true
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py || true
 
       - name: Normalize script filename
         run: |
-          if [ -f autopilot_script.txt ]; then mv autopilot_script.txt autopilot_script.py; fi
+          if [ -f "autopilot_script.txt" ]; then mv autopilot_script.txt autopilot_script.py; fi
 
       - name: Patch script (remove Colab-only code + add imports)
         run: |
-          sed -i '/google.colab/d' autopilot_script.py || true
-          sed -i '/get_ipython/d' autopilot_script.py || true
-          sed -i '1i import os' autopilot_script.py
+          sed -i '/get_ipython()/d' autopilot_script.py || true
+          sed -i '/from google.colab import drive/d' autopilot_script.py || true
+          if ! grep -q "import os" autopilot_script.py; then sed -i '1i import os' autopilot_script.py; fi
 
       - name: Run autopilot script
         run: |
@@ -56,21 +47,26 @@ jobs:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
         run: |
           python - <<'PY'
-          import os, glob
+          import os, glob, json
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
+          from oauth2client.service_account import ServiceAccountCredentials
 
-          # Save service account JSON from secret
           creds_path = "service_account.json"
           with open(creds_path, "w") as f:
               f.write(os.environ["GDRIVE_KEY"])
 
+          scope = ["https://www.googleapis.com/auth/drive"]
+          credentials = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
+
           gauth = GoogleAuth()
-          gauth.settings['service_config'] = {'client_json_file_path': creds_path}
-          gauth.ServiceAuth()
+          gauth.auth_method = "service"
+          gauth.credentials = credentials
           drive = GoogleDrive(gauth)
 
           folder_id = os.environ["FOLDER_ID"]
+          os.makedirs("Autopost_Clips", exist_ok=True)
+
           for file in glob.glob("Autopost_Clips/*"):
               f = drive.CreateFile({"parents": [{"id": folder_id}]})
               f.SetContentFile(file)
@@ -82,5 +78,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: autopost_results
-          path: Autopost_Clips/*
+          name: autopilot-results
+          path: Autopost_Clips/**
