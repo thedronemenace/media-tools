@@ -19,7 +19,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nbconvert nbfmt papermill pydrive2 gdown yt-dlp ffmpeg-python openai-whisper srt numpy pandas
+          pip install nbconvert
+          pip install papermill
+          pip install pydrive2
+          pip install gdown
+          pip install yt-dlp
+          pip install ffmpeg-python
+          pip install openai-whisper
+          pip install srt
+          pip install numpy
+          pip install pandas
 
       - name: Convert Notebook to Python
         run: |
@@ -51,18 +60,16 @@ jobs:
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Write service account JSON from secret
+          # Save service account JSON from secret
           creds_path = "service_account.json"
           with open(creds_path, "w") as f:
               f.write(os.environ["GDRIVE_KEY"])
 
-          # Authenticate using service account
           gauth = GoogleAuth()
           gauth.settings['service_config'] = {'client_json_file_path': creds_path}
           gauth.ServiceAuth()
           drive = GoogleDrive(gauth)
 
-          # Upload results
           folder_id = os.environ["FOLDER_ID"]
           for file in glob.glob("Autopost_Clips/*"):
               f = drive.CreateFile({"parents": [{"id": folder_id}]})
@@ -70,3 +77,10 @@ jobs:
               f.Upload()
               print("✅ Uploaded:", file)
           PY
+
+      - name: Upload artifacts (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopost_results
+          path: Autopost_Clips/*
