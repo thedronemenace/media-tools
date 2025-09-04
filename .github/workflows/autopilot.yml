@@ -3,7 +3,7 @@ name: MediaTools Autopilot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"   # every 2 hours
+    - cron: "0 */2 * * *"   # runs every 2 hours
 
 jobs:
   run-autopilot:
@@ -25,40 +25,44 @@ jobs:
 
       - name: Convert Notebook to script
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
+          ls -l
 
       - name: Run autopilot script
         run: |
           python3 autopilot_script.py
-        env:
-          GDRIVE_FOLDER_ID: "YOUR_DRIVE_FOLDER_ID"   # 🔹 Replace this with your actual Drive folder ID
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GDRIVE_KEY }}
 
       - name: Upload results to Google Drive
-        if: always()
         run: |
           python3 - <<'PY'
-          import os, glob
+          import os, glob, zipfile
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
+          # Authenticate with service account
           gauth = GoogleAuth()
-          gauth.LoadCredentialsFile("service_account.json")
+          gauth.LoadCredentialsFile("credentials.json")
           drive = GoogleDrive(gauth)
 
-          folder_id = os.environ.get("GDRIVE_FOLDER_ID", "")
+          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"  # your Google Drive folder ID
 
-          for fp in glob.glob("./Autopost_Clips/*"):
-              fname = os.path.basename(fp)
-              f = drive.CreateFile({"title": fname, "parents": [{"id": folder_id}]})
-              f.SetContentFile(fp)
-              f.Upload()
-              print(f"✅ Uploaded {fname} to Google Drive")
+          # Zip results
+          zip_name = "results.zip"
+          with zipfile.ZipFile(zip_name, "w") as z:
+              for f in glob.glob("Autopost_Clips/**/*", recursive=True):
+                  if os.path.isfile(f):
+                      z.write(f)
+
+          # Upload to Google Drive
+          f = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
+          f.SetContentFile(zip_name)
+          f.Upload()
+          print("✅ Uploaded to Google Drive:", f["alternateLink"])
           PY
 
       - name: Upload artifacts (fallback)
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: autopilot-results
           path: ./Autopost_Clips/**
+          retention-days: 7
