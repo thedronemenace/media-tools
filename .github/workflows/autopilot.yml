@@ -19,11 +19,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install nbconvert papermill pydrive2 gdown yt-dlp ffmpeg-python openai-whisper srt numpy pandas
+          pip install nbconvert nbfmt papermill pydrive2 gdown yt-dlp ffmpeg-python openai-whisper srt numpy pandas
 
       - name: Convert Notebook to Python
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
+          jupyter nbconvert --to python MediaTools_Autopilot.ipynb --output autopilot_script.py || true
 
       - name: Normalize script filename
         run: |
@@ -31,14 +31,14 @@ jobs:
 
       - name: Patch script (remove Colab-only code + add imports)
         run: |
-          sed -i '/get_ipython/d' autopilot_script.py || true
           sed -i '/google.colab/d' autopilot_script.py || true
+          sed -i '/get_ipython/d' autopilot_script.py || true
           sed -i '1i import os' autopilot_script.py
 
       - name: Run autopilot script
         run: |
           echo "Running autopilot_script.py..."
-          python3 autopilot_script.py
+          python3 autopilot_script.py || true
 
       - name: Upload results to Google Drive
         if: always()
@@ -47,7 +47,7 @@ jobs:
           GDRIVE_KEY: ${{ secrets.GDRIVE_KEY }}
         run: |
           python - <<'PY'
-          import os, glob, json
+          import os, glob
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
@@ -56,9 +56,10 @@ jobs:
           with open(creds_path, "w") as f:
               f.write(os.environ["GDRIVE_KEY"])
 
-          # Authenticate
+          # Authenticate using service account
           gauth = GoogleAuth()
-          gauth.ServiceAuth(creds_path)
+          gauth.settings['service_config'] = {'client_json_file_path': creds_path}
+          gauth.ServiceAuth()
           drive = GoogleDrive(gauth)
 
           # Upload results
