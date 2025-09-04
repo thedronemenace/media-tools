@@ -8,56 +8,57 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install yt-dlp ffmpeg-python openai-whisper srt numpy pandas pydrive2 nbconvert
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jupyter nbconvert gdown pydrive2
 
-    - name: Convert Notebook to Python
-      run: |
-        jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
+      - name: Convert Notebook to Python (force name)
+        run: |
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script
 
-    - name: Run autopilot script
-      run: |
-        echo "Running autopilot_script.py..."
-        python3 autopilot_script.py
+      - name: Run autopilot script
+        run: |
+          echo "Running autopilot_script.py..."
+          ls -lh
+          python3 autopilot_script.py
 
-    - name: Upload results to Google Drive
-      env:
-        GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
-        GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GDRIVE_SERVICE_KEY }}
-      run: |
-        python3 <<'PY'
-        from pydrive2.auth import GoogleAuth
-        from pydrive2.drive import GoogleDrive
-        import os, json
+      - name: Upload results to Google Drive
+        env:
+          GDRIVE_FOLDER_ID: 1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z
+          SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_JSON }}
+        run: |
+          python3 - <<'PY'
+          import os, json
+          from pydrive2.auth import GoogleAuth
+          from pydrive2.drive import GoogleDrive
 
-        creds_path = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-        with open(creds_path, 'w') as f:
-            f.write(os.environ['GDRIVE_SERVICE_KEY'])
+          creds_path = "gdrive_key.json"
+          with open(creds_path, "w") as f:
+              f.write(os.environ["SERVICE_ACCOUNT_JSON"])
 
-        gauth = GoogleAuth()
-        gauth.LoadCredentialsFile(creds_path)
-        if gauth.credentials is None:
-            gauth.LocalWebserverAuth()
-        else:
-            gauth.Authorize()
-        drive = GoogleDrive(gauth)
+          gauth = GoogleAuth()
+          gauth.LoadCredentialsFile(creds_path)
+          drive = GoogleDrive(gauth)
 
-        folder_id = os.environ['GDRIVE_FOLDER_ID']
-        for root, _, files in os.walk("Autopost_Clips"):
-            for file_name in files:
-                file_path = os.path.join(root, file_name)
-                f = drive.CreateFile({"title": file_name, "parents": [{"id": folder_id}]})
-                f.SetContentFile(file_path)
-                f.Upload()
-                print("✅ Uploaded:", file_name)
-        PY
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+
+          for root, _, files in os.walk("Autopost_Clips"):
+              for name in files:
+                  filepath = os.path.join(root, name)
+                  f = drive.CreateFile({
+                      "title": name,
+                      "parents": [{"id": folder_id}]
+                  })
+                  f.SetContentFile(filepath)
+                  f.Upload()
+                  print("✅ Uploaded:", name)
+          PY
