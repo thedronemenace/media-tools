@@ -25,11 +25,14 @@ jobs:
 
       - name: Convert Notebook to script
         run: |
-          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output autopilot_script.py
+          jupyter nbconvert --to script MediaTools_Autopilot.ipynb --output=autopilot_script
+          echo "✅ Conversion done"
           ls -l
 
       - name: Run autopilot script
         run: |
+          echo "Running autopilot_script.py..."
+          ls -l
           python3 autopilot_script.py
 
       - name: Upload results to Google Drive
@@ -39,21 +42,18 @@ jobs:
           from pydrive2.auth import GoogleAuth
           from pydrive2.drive import GoogleDrive
 
-          # Authenticate with service account
           gauth = GoogleAuth()
           gauth.LoadCredentialsFile("credentials.json")
           drive = GoogleDrive(gauth)
 
-          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"  # your Google Drive folder ID
+          folder_id = "1hyZKoX2dZW0VqtYiSWw4vhp4loJo-H0z"
 
-          # Zip results
           zip_name = "results.zip"
           with zipfile.ZipFile(zip_name, "w") as z:
               for f in glob.glob("Autopost_Clips/**/*", recursive=True):
                   if os.path.isfile(f):
                       z.write(f)
 
-          # Upload to Google Drive
           f = drive.CreateFile({"title": zip_name, "parents": [{"id": folder_id}]})
           f.SetContentFile(zip_name)
           f.Upload()
